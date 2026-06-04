@@ -1,0 +1,6 @@
+{
+  "name": "RP Status",
+  "description": "Controle de Disponibilidade e Monitoramento Operacional de Frota.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
