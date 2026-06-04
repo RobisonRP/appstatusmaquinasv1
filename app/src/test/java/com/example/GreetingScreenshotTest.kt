@@ -23,7 +23,7 @@ class GreetingScreenshotTest {
   fun greeting_screenshot() {
     composeTestRule.setContent { 
       MyApplicationTheme { 
-        HeaderSection(onShare = {}, onCopy = {}) 
+        HeaderSection(onShare = {}, onCopy = {}, onSettingsClick = {}) 
       } 
     }
 

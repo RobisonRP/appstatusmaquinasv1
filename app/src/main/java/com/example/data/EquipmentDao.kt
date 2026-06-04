@@ -19,4 +19,7 @@ interface EquipmentDao {
 
     @Query("DELETE FROM equipments")
     suspend fun deleteAll()
+
+    @Query("DELETE FROM equipments WHERE tabId = :tabId")
+    suspend fun deleteEquipmentsByTabId(tabId: Long)
 }

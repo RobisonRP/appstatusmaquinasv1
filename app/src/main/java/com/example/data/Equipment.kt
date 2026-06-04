@@ -8,5 +8,6 @@ data class Equipment(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
     val nome: String,
     val status: String, // "Disponível", "Em Manutenção", "Preventiva"
-    val obs: String = ""
+    val obs: String = "",
+    val tabId: Long = 1L
 )

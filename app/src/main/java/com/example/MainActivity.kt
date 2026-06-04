@@ -41,11 +41,21 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.data.Equipment
+import com.example.data.EquipmentStatusLog
+import com.example.data.EquipmentTab
 import com.example.ui.theme.*
 import com.example.viewmodel.EquipmentViewModel
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.combinedClickable
 import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.*
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import android.net.Uri
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -69,10 +79,125 @@ fun RPStatusApp(
 ) {
     val context = LocalContext.current
     val equipments by viewModel.equipmentsState.collectAsStateWithLifecycle()
+    val logs by viewModel.logsState.collectAsStateWithLifecycle()
+    val tabs by viewModel.tabsState.collectAsStateWithLifecycle()
+    val selectedTabId by viewModel.selectedTabId.collectAsStateWithLifecycle()
+
     val snackbarHostState = remember { SnackbarHostState() }
     val coroutineScope = rememberCoroutineScope()
     var novoEquipamentoNome by remember { mutableStateOf("") }
     val focusManager = LocalFocusManager.current
+
+    // Dialog control states
+    var showAddTabDialog by remember { mutableStateOf(false) }
+    var tabActionTarget by remember { mutableStateOf<EquipmentTab?>(null) }
+    var renameTabTarget by remember { mutableStateOf<EquipmentTab?>(null) }
+    var deleteTabTarget by remember { mutableStateOf<EquipmentTab?>(null) }
+    var renameEquipmentTarget by remember { mutableStateOf<Equipment?>(null) }
+    var showSelectReportTypeForShare by remember { mutableStateOf(false) }
+    var showSelectReportTypeForCopy by remember { mutableStateOf(false) }
+    var showSettingsDialog by remember { mutableStateOf(false) }
+
+    // Filtered equipments belong to current tab
+    val filteredEquipments = remember(equipments, selectedTabId) {
+        equipments.filter { it.tabId == selectedTabId }
+    }
+
+    // Modal dialogs rendering
+    if (showAddTabDialog) {
+        AddTabDialog(
+            onDismiss = { showAddTabDialog = false },
+            onConfirm = { name -> viewModel.addTab(name) }
+        )
+    }
+
+    if (showSelectReportTypeForShare) {
+        SelectReportTypeDialog(
+            onDismiss = { showSelectReportTypeForShare = false },
+            onSelectSimple = {
+                val activeTabName = tabs.find { it.id == selectedTabId }?.name ?: "Frota"
+                val report = generateSimpleReportText(filteredEquipments, activeTabName)
+                shareReport(context, report)
+            },
+            onSelectDetailed = {
+                val activeTabName = tabs.find { it.id == selectedTabId }?.name ?: "Frota"
+                val report = generateDetailedReportText(filteredEquipments, activeTabName)
+                shareReport(context, report)
+            }
+        )
+    }
+
+    if (showSelectReportTypeForCopy) {
+        SelectReportTypeDialog(
+            onDismiss = { showSelectReportTypeForCopy = false },
+            onSelectSimple = {
+                val activeTabName = tabs.find { it.id == selectedTabId }?.name ?: "Frota"
+                val report = generateSimpleReportText(filteredEquipments, activeTabName)
+                copyToClipboard(context, report) {
+                    coroutineScope.launch {
+                        snackbarHostState.showSnackbar(
+                            message = "📊 Relatório Simples copiado para a área de transferência!",
+                            duration = SnackbarDuration.Short
+                        )
+                    }
+                }
+            },
+            onSelectDetailed = {
+                val activeTabName = tabs.find { it.id == selectedTabId }?.name ?: "Frota"
+                val report = generateDetailedReportText(filteredEquipments, activeTabName)
+                copyToClipboard(context, report) {
+                    coroutineScope.launch {
+                        snackbarHostState.showSnackbar(
+                            message = "📊 Relatório Detalhado copiado para a área de transferência!",
+                            duration = SnackbarDuration.Short
+                        )
+                    }
+                }
+            }
+        )
+    }
+
+    if (showSettingsDialog) {
+        SettingsDialog(
+            viewModel = viewModel,
+            onDismiss = { showSettingsDialog = false },
+            snackbarHostState = snackbarHostState,
+            coroutineScope = coroutineScope
+        )
+    }
+
+    tabActionTarget?.let { tab ->
+        TabActionOptionsDialog(
+            tab = tab,
+            onDismiss = { tabActionTarget = null },
+            onRenameClick = { renameTabTarget = tab },
+            onDeleteClick = { deleteTabTarget = tab }
+        )
+    }
+
+    renameTabTarget?.let { tab ->
+        RenameTabDialog(
+            tab = tab,
+            onDismiss = { renameTabTarget = null },
+            onConfirm = { newName -> viewModel.renameTab(tab.id, newName) }
+        )
+    }
+
+    renameEquipmentTarget?.let { eq ->
+        RenameEquipmentDialog(
+            equipment = eq,
+            onDismiss = { renameEquipmentTarget = null },
+            onConfirm = { newName -> viewModel.updateEquipmentName(eq, newName) }
+        )
+    }
+
+    deleteTabTarget?.let { tab ->
+        ConfirmDeleteTabDialog(
+            tab = tab,
+            onDismiss = { deleteTabTarget = null },
+            onConfirm = { viewModel.deleteTab(tab.id) }
+        )
+    }
 
     Scaffold(
         snackbarHost = { SnackbarHost(snackbarHostState) },
@@ -99,36 +224,31 @@ fun RPStatusApp(
                     Column(
                         modifier = Modifier
                             .width(360.dp)
-                            .fillMaxHeight(),
+                            .fillMaxHeight()
+                            .verticalScroll(rememberScrollState()),
                         verticalArrangement = Arrangement.spacedBy(16.dp)
                     ) {
                         HeaderSection(
                             onShare = {
-                                if (equipments.isEmpty()) {
+                                if (filteredEquipments.isEmpty()) {
                                     Toast.makeText(context, "Adicione pelo menos um equipamento antes de gerar o relatório.", Toast.LENGTH_SHORT).show()
                                 } else {
-                                    val report = generateReportText(equipments)
-                                    shareReport(context, report)
+                                    showSelectReportTypeForShare = true
                                 }
                             },
                             onCopy = {
-                                if (equipments.isEmpty()) {
+                                if (filteredEquipments.isEmpty()) {
                                     Toast.makeText(context, "Adicione pelo menos um equipamento antes de gerar o relatório.", Toast.LENGTH_SHORT).show()
                                 } else {
-                                    val report = generateReportText(equipments)
-                                    copyToClipboard(context, report) {
-                                        coroutineScope.launch {
-                                            snackbarHostState.showSnackbar(
-                                                message = "📊 Relatório copiado para a área de transferência!",
-                                                duration = SnackbarDuration.Short
-                                            )
-                                        }
-                                    }
+                                    showSelectReportTypeForCopy = true
                                 }
+                            },
+                            onSettingsClick = {
+                                showSettingsDialog = true
                             }
                         )
 
-                        QuickStatsBlock(equipments = equipments)
+                        QuickStatsBlock(equipments = filteredEquipments)
 
                         AddEquipmentForm(
                             nome = novoEquipamentoNome,
@@ -149,13 +269,20 @@ fun RPStatusApp(
                     Column(
                         modifier = Modifier
                             .weight(1f)
-                            .fillMaxHeight()
+                            .fillMaxHeight(),
+                        verticalArrangement = Arrangement.spacedBy(12.dp)
                     ) {
-                        FleetHeader(count = equipments.size)
-                        
-                        Spacer(modifier = Modifier.height(12.dp))
+                        TabsRow(
+                            tabs = tabs,
+                            selectedTabId = selectedTabId,
+                            onTabSelect = { viewModel.selectTab(it) },
+                            onAddTabClick = { showAddTabDialog = true },
+                            onTabLongClick = { tabActionTarget = it }
+                        )
 
-                        if (equipments.isEmpty()) {
+                        FleetHeader(count = filteredEquipments.size)
+
+                        if (filteredEquipments.isEmpty()) {
                             EmptyStateBlock(modifier = Modifier.weight(1f))
                         } else {
                             LazyVerticalGrid(
@@ -165,7 +292,7 @@ fun RPStatusApp(
                                 verticalArrangement = Arrangement.spacedBy(16.dp),
                                 modifier = Modifier.weight(1f)
                             ) {
-                                items(equipments, key = { it.id }) { item ->
+                                items(filteredEquipments, key = { it.id }) { item ->
                                     EquipmentCard(
                                         equipment = item,
                                         onStatusChange = { newStatus ->
@@ -173,6 +300,9 @@ fun RPStatusApp(
                                         },
                                         onObsChange = { newObs ->
                                             viewModel.updateEquipmentObs(item, newObs)
+                                        },
+                                        onRenameClick = {
+                                            renameEquipmentTarget = item
                                         },
                                         onDeleteClick = {
                                             viewModel.deleteEquipment(item)
@@ -195,33 +325,37 @@ fun RPStatusApp(
                     item {
                         HeaderSection(
                             onShare = {
-                                if (equipments.isEmpty()) {
+                                if (filteredEquipments.isEmpty()) {
                                     Toast.makeText(context, "Adicione pelo menos um equipamento antes de gerar o relatório.", Toast.LENGTH_SHORT).show()
                                 } else {
-                                    val report = generateReportText(equipments)
-                                    shareReport(context, report)
+                                    showSelectReportTypeForShare = true
                                 }
                             },
                             onCopy = {
-                                if (equipments.isEmpty()) {
+                                if (filteredEquipments.isEmpty()) {
                                     Toast.makeText(context, "Adicione pelo menos um equipamento antes de gerar o relatório.", Toast.LENGTH_SHORT).show()
                                 } else {
-                                    val report = generateReportText(equipments)
-                                    copyToClipboard(context, report) {
-                                        coroutineScope.launch {
-                                            snackbarHostState.showSnackbar(
-                                                message = "📊 Relatório copiado para a área de transferência!",
-                                                duration = SnackbarDuration.Short
-                                            )
-                                        }
-                                    }
+                                    showSelectReportTypeForCopy = true
                                 }
+                            },
+                            onSettingsClick = {
+                                showSettingsDialog = true
                             }
                         )
                     }
 
                     item {
-                        QuickStatsBlock(equipments = equipments)
+                        TabsRow(
+                            tabs = tabs,
+                            selectedTabId = selectedTabId,
+                            onTabSelect = { viewModel.selectTab(it) },
+                            onAddTabClick = { showAddTabDialog = true },
+                            onTabLongClick = { tabActionTarget = it }
+                        )
+                    }
+
+                    item {
+                        QuickStatsBlock(equipments = filteredEquipments)
                     }
 
                     item {
@@ -241,10 +375,10 @@ fun RPStatusApp(
                     }
 
                     item {
-                        FleetHeader(count = equipments.size)
+                        FleetHeader(count = filteredEquipments.size)
                     }
 
-                    if (equipments.isEmpty()) {
+                    if (filteredEquipments.isEmpty()) {
                         item {
                             EmptyStateBlock(
                                 modifier = Modifier
@@ -253,7 +387,7 @@ fun RPStatusApp(
                             )
                         }
                     } else {
-                        items(equipments, key = { it.id }) { item ->
+                        items(filteredEquipments, key = { it.id }) { item ->
                             EquipmentCard(
                                 equipment = item,
                                 onStatusChange = { newStatus ->
@@ -261,6 +395,9 @@ fun RPStatusApp(
                                 },
                                 onObsChange = { newObs ->
                                     viewModel.updateEquipmentObs(item, newObs)
+                                },
+                                onRenameClick = {
+                                    renameEquipmentTarget = item
                                 },
                                 onDeleteClick = {
                                     viewModel.deleteEquipment(item)
@@ -278,6 +415,7 @@ fun RPStatusApp(
 fun HeaderSection(
     onShare: () -> Unit,
     onCopy: () -> Unit,
+    onSettingsClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     Card(
@@ -413,6 +551,31 @@ fun HeaderSection(
                         fontWeight = FontWeight.Bold
                     )
                 }
+            }
+
+            // Configuration button (Gear icon)
+            Button(
+                onClick = onSettingsClick,
+                colors = ButtonDefaults.buttonColors(containerColor = Slate700),
+                shape = RoundedCornerShape(14.dp),
+                contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .testTag("settings_button")
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Settings,
+                    contentDescription = "Configuração",
+                    tint = Slate100,
+                    modifier = Modifier.size(18.dp)
+                )
+                Spacer(modifier = Modifier.width(6.dp))
+                Text(
+                    text = "Configuração",
+                    color = Slate100,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 13.sp
+                )
             }
         }
     }
@@ -643,6 +806,7 @@ fun EquipmentCard(
     equipment: Equipment,
     onStatusChange: (String) -> Unit,
     onObsChange: (String) -> Unit,
+    onRenameClick: () -> Unit,
     onDeleteClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -654,6 +818,13 @@ fun EquipmentCard(
     }
 
     var dropdownExpanded by remember { mutableStateOf(false) }
+    var obsText by remember(equipment.id) { mutableStateOf(equipment.obs) }
+
+    LaunchedEffect(equipment.obs) {
+        if (obsText != equipment.obs) {
+            obsText = equipment.obs
+        }
+    }
 
     Card(
         colors = CardDefaults.cardColors(containerColor = Slate800),
@@ -717,18 +888,37 @@ fun EquipmentCard(
                     )
                 }
 
-                IconButton(
-                    onClick = onDeleteClick,
-                    modifier = Modifier
-                        .size(32.dp)
-                        .testTag("delete_equipment_${equipment.id}")
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp)
                 ) {
-                    Icon(
-                        imageVector = Icons.Default.Delete,
-                        contentDescription = "Excluir Equipamento",
-                        tint = Slate600,
-                        modifier = Modifier.size(16.dp)
-                    )
+                    IconButton(
+                        onClick = onRenameClick,
+                        modifier = Modifier
+                            .size(32.dp)
+                            .testTag("rename_equipment_${equipment.id}")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Edit,
+                            contentDescription = "Renomear Equipamento",
+                            tint = Slate600,
+                            modifier = Modifier.size(16.dp)
+                        )
+                    }
+
+                    IconButton(
+                        onClick = onDeleteClick,
+                        modifier = Modifier
+                            .size(32.dp)
+                            .testTag("delete_equipment_${equipment.id}")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Delete,
+                            contentDescription = "Excluir Equipamento",
+                            tint = Slate600,
+                            modifier = Modifier.size(16.dp)
+                        )
+                    }
                 }
             }
 
@@ -824,8 +1014,11 @@ fun EquipmentCard(
                 )
 
                 OutlinedTextField(
-                    value = equipment.obs,
-                    onValueChange = onObsChange,
+                    value = obsText,
+                    onValueChange = {
+                        obsText = it
+                        onObsChange(it)
+                    },
                     placeholder = {
                         Text(
                             text = "Notas rápidas (ex: falha mecânica)",
@@ -856,12 +1049,12 @@ fun EquipmentCard(
 }
 
 // FORMATTING & UTILITY FUNCTIONS
-fun generateReportText(equipments: List<Equipment>): String {
+fun generateReportText(equipments: List<Equipment>, tabName: String = "Frota"): String {
     val dateFormat = SimpleDateFormat("dd/MM/yyyy HH:mm", Locale("pt", "BR"))
     val currentDateTimeStatus = dateFormat.format(Date())
     
     val sb = java.lang.StringBuilder()
-    sb.append("📊 *DISPONIBILIDADE DE MÁQUINAS - $currentDateTimeStatus* 📊\n\n")
+    sb.append("📊 *STATUS: ${tabName.uppercase()} - $currentDateTimeStatus* 📊\n\n")
     
     for (item in equipments) {
         val emoji = when (item.status) {
@@ -905,3 +1098,1282 @@ fun copyToClipboard(context: Context, text: String, onCopied: () -> Unit) {
         Toast.makeText(context, "Erro ao copiar: ${e.localizedMessage}", Toast.LENGTH_SHORT).show()
     }
 }
+
+@Composable
+fun StatusHistorySection(
+    logs: List<EquipmentStatusLog>,
+    modifier: Modifier = Modifier
+) {
+    Card(
+        colors = CardDefaults.cardColors(containerColor = Slate800),
+        shape = RoundedCornerShape(24.dp),
+        border = BorderStroke(1.dp, Slate700.copy(alpha = 0.5f)),
+        modifier = modifier.fillMaxWidth()
+    ) {
+        Column(
+            modifier = Modifier.padding(20.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "HISTÓRICO DE ALTERAÇÕES",
+                    color = Slate400,
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.Bold,
+                    letterSpacing = 1.sp
+                )
+                
+                Box(
+                    modifier = Modifier
+                        .background(color = Slate900, shape = CircleShape)
+                        .border(width = 1.dp, color = Slate700, shape = CircleShape)
+                        .padding(horizontal = 8.dp, vertical = 2.dp)
+                ) {
+                    Text(
+                        text = logs.size.toString(),
+                        color = Slate400,
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+            }
+
+            if (logs.isEmpty()) {
+                Text(
+                    text = "Nenhuma alteração registrada ainda.",
+                    color = Slate600,
+                    fontSize = 12.sp,
+                    modifier = Modifier.padding(vertical = 8.dp)
+                )
+            } else {
+                // Keep only the last 15 elements to avoid infinite list expansion
+                val displayLogs = logs.take(15)
+                
+                Column(
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    displayLogs.forEach { log ->
+                        StatusHistoryRow(log = log)
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun StatusHistoryRow(
+    log: EquipmentStatusLog,
+    modifier: Modifier = Modifier
+) {
+    val dateFormat = remember { SimpleDateFormat("dd/MM HH:mm", Locale("pt", "BR")) }
+    val formattedTime = remember(log.timestamp) { dateFormat.format(Date(log.timestamp)) }
+
+    Column(
+        modifier = modifier
+            .fillMaxWidth()
+            .background(color = Slate900.copy(alpha = 0.5f), shape = RoundedCornerShape(14.dp))
+            .border(width = 1.dp, color = Slate700.copy(alpha = 0.3f), shape = RoundedCornerShape(14.dp))
+            .padding(12.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp)
+    ) {
+        // Top: Equipment Name & Time
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = log.equipmentName,
+                color = Color.White,
+                fontSize = 13.sp,
+                fontWeight = FontWeight.Bold,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f)
+            )
+            
+            Text(
+                text = formattedTime,
+                color = Slate600,
+                fontSize = 10.sp,
+                fontWeight = FontWeight.Medium
+            )
+        }
+
+        // Bottom: Status Transition badges
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            StatusTransitionBadge(status = log.statusAnterior)
+            
+            Icon(
+                imageVector = Icons.Default.ArrowForward,
+                contentDescription = "mudou para",
+                tint = Slate600,
+                modifier = Modifier.size(12.dp)
+            )
+            
+            StatusTransitionBadge(status = log.statusNovo)
+        }
+    }
+}
+
+@Composable
+fun StatusTransitionBadge(
+    status: String,
+    modifier: Modifier = Modifier
+) {
+    val (color, text) = when (status) {
+        "Disponível" -> StatusDisponivel to "Disponível"
+        "Em Manutenção" -> StatusManutencao to "Manutenção"
+        "Preventiva" -> StatusPreventiva to "Preventiva"
+        "Criado" -> Slate400 to "Criado"
+        else -> Slate400 to status
+    }
+
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(4.dp),
+        modifier = modifier
+            .background(color = color.copy(alpha = 0.08f), shape = RoundedCornerShape(6.dp))
+            .border(width = 1.dp, color = color.copy(alpha = 0.2f), shape = RoundedCornerShape(6.dp))
+            .padding(horizontal = 6.dp, vertical = 2.dp)
+    ) {
+        Box(
+            modifier = Modifier
+                .size(5.dp)
+                .background(color = color, shape = CircleShape)
+        )
+        Text(
+            text = text,
+            color = color,
+            fontSize = 9.sp,
+            fontWeight = FontWeight.Bold
+        )
+    }
+}
+
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+fun TabsRow(
+    tabs: List<EquipmentTab>,
+    selectedTabId: Long,
+    onTabSelect: (Long) -> Unit,
+    onAddTabClick: () -> Unit,
+    onTabLongClick: (EquipmentTab) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Card(
+        colors = CardDefaults.cardColors(containerColor = Slate800),
+        shape = RoundedCornerShape(24.dp),
+        border = BorderStroke(1.dp, Slate700.copy(alpha = 0.5f)),
+        modifier = modifier.fillMaxWidth()
+    ) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "ABAS / SETORES",
+                    color = Slate400,
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.Bold,
+                    letterSpacing = 1.sp
+                )
+                
+                IconButton(
+                    onClick = onAddTabClick,
+                    modifier = Modifier.size(24.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Add,
+                        contentDescription = "Adicionar nova aba",
+                        tint = Color.White,
+                        modifier = Modifier.size(20.dp)
+                    )
+                }
+            }
+
+            LazyRow(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                items(tabs, key = { it.id }) { tab ->
+                    val isSelected = tab.id == selectedTabId
+                    Box(
+                        modifier = Modifier
+                            .background(
+                                color = if (isSelected) Indigo600 else Slate900,
+                                shape = RoundedCornerShape(14.dp)
+                            )
+                            .border(
+                                width = 1.dp,
+                                color = if (isSelected) Color.Transparent else Slate700.copy(alpha = 0.5f),
+                                shape = RoundedCornerShape(14.dp)
+                            )
+                            .combinedClickable(
+                                onClick = { onTabSelect(tab.id) },
+                                onLongClick = { onTabLongClick(tab) }
+                            )
+                            .padding(horizontal = 14.dp, vertical = 8.dp)
+                    ) {
+                        Text(
+                            text = tab.name.uppercase(),
+                            color = if (isSelected) Color.White else Slate400,
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Bold,
+                            letterSpacing = 0.5.sp
+                        )
+                    }
+                }
+
+                item {
+                    Box(
+                        modifier = Modifier
+                            .background(color = Slate900.copy(alpha = 0.5f), shape = RoundedCornerShape(14.dp))
+                            .border(width = 1.dp, color = Slate700.copy(alpha = 0.3f), shape = RoundedCornerShape(14.dp))
+                            .clickable { onAddTabClick() }
+                            .padding(horizontal = 12.dp, vertical = 8.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Add,
+                                contentDescription = "Mais",
+                                tint = Slate400,
+                                modifier = Modifier.size(12.dp)
+                            )
+                            Text(
+                                text = "OBRA",
+                                color = Slate400,
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Bold,
+                                letterSpacing = 0.5.sp
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun TabActionOptionsDialog(
+    tab: EquipmentTab,
+    onDismiss: () -> Unit,
+    onRenameClick: () -> Unit,
+    onDeleteClick: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        confirmButton = {},
+        dismissButton = {},
+        title = {
+            Text(
+                text = "Aba: ${tab.name}",
+                color = Color.White,
+                fontSize = 18.sp,
+                fontWeight = FontWeight.Bold
+            )
+        },
+        text = {
+            Column(
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 8.dp)
+            ) {
+                Button(
+                    onClick = {
+                        onRenameClick()
+                        onDismiss()
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = Indigo600),
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(imageVector = Icons.Default.Edit, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Text(text = "Renomear Aba", fontWeight = FontWeight.Bold)
+                    }
+                }
+
+                Button(
+                    onClick = {
+                        onDeleteClick()
+                        onDismiss()
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = StatusManutencao),
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(imageVector = Icons.Default.Delete, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Text(text = "Excluir Aba e Equipamentos", fontWeight = FontWeight.Bold)
+                    }
+                }
+
+                OutlinedButton(
+                    onClick = onDismiss,
+                    border = BorderStroke(1.dp, Slate700),
+                    colors = ButtonDefaults.outlinedButtonColors(contentColor = Slate100),
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text(text = "Cancelar", fontWeight = FontWeight.Medium)
+                }
+            }
+        },
+        containerColor = Slate800,
+        shape = RoundedCornerShape(24.dp)
+    )
+}
+
+@Composable
+fun AddTabDialog(
+    onDismiss: () -> Unit,
+    onConfirm: (String) -> Unit
+) {
+    var name by remember { mutableStateOf("") }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        confirmButton = {
+            Button(
+                onClick = {
+                    if (name.isNotBlank()) {
+                        onConfirm(name)
+                        onDismiss()
+                    }
+                },
+                enabled = name.isNotBlank(),
+                colors = ButtonDefaults.buttonColors(containerColor = Indigo600),
+                shape = RoundedCornerShape(12.dp)
+            ) {
+                Text("Adicionar", fontWeight = FontWeight.Bold)
+            }
+        },
+        dismissButton = {
+            TextButton(
+                onClick = onDismiss,
+                colors = ButtonDefaults.textButtonColors(contentColor = Slate400)
+            ) {
+                Text("Cancelar")
+            }
+        },
+        title = {
+            Text(
+                text = "Nova Seção / Aba",
+                color = Color.White,
+                fontSize = 18.sp,
+                fontWeight = FontWeight.Bold
+            )
+        },
+        text = {
+            OutlinedTextField(
+                value = name,
+                onValueChange = { name = it },
+                label = { Text("Nome da aba") },
+                colors = OutlinedTextFieldDefaults.colors(
+                    focusedTextColor = Slate100,
+                    unfocusedTextColor = Slate100,
+                    focusedContainerColor = Slate900,
+                    unfocusedContainerColor = Slate900,
+                    focusedBorderColor = Indigo600,
+                    unfocusedBorderColor = Slate700,
+                    focusedLabelColor = Indigo600,
+                    unfocusedLabelColor = Slate400
+                ),
+                shape = RoundedCornerShape(12.dp),
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth()
+            )
+        },
+        containerColor = Slate800,
+        shape = RoundedCornerShape(24.dp)
+    )
+}
+
+@Composable
+fun RenameTabDialog(
+    tab: EquipmentTab,
+    onDismiss: () -> Unit,
+    onConfirm: (String) -> Unit
+) {
+    var name by remember { mutableStateOf(tab.name) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        confirmButton = {
+            Button(
+                onClick = {
+                    if (name.isNotBlank()) {
+                        onConfirm(name)
+                        onDismiss()
+                    }
+                },
+                enabled = name.isNotBlank(),
+                colors = ButtonDefaults.buttonColors(containerColor = Indigo600),
+                shape = RoundedCornerShape(12.dp)
+            ) {
+                Text("Salvar", fontWeight = FontWeight.Bold)
+            }
+        },
+        dismissButton = {
+            TextButton(
+                onClick = onDismiss,
+                colors = ButtonDefaults.textButtonColors(contentColor = Slate400)
+            ) {
+                Text("Cancelar")
+            }
+        },
+        title = {
+            Text(
+                text = "Renomear Aba",
+                color = Color.White,
+                fontSize = 18.sp,
+                fontWeight = FontWeight.Bold
+            )
+        },
+        text = {
+            OutlinedTextField(
+                value = name,
+                onValueChange = { name = it },
+                label = { Text("Nome da aba") },
+                colors = OutlinedTextFieldDefaults.colors(
+                    focusedTextColor = Slate100,
+                    unfocusedTextColor = Slate100,
+                    focusedContainerColor = Slate900,
+                    unfocusedContainerColor = Slate900,
+                    focusedBorderColor = Indigo600,
+                    unfocusedBorderColor = Slate700,
+                    focusedLabelColor = Indigo600,
+                    unfocusedLabelColor = Slate400
+                ),
+                shape = RoundedCornerShape(12.dp),
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth()
+            )
+        },
+        containerColor = Slate800,
+        shape = RoundedCornerShape(24.dp)
+    )
+}
+
+@Composable
+fun RenameEquipmentDialog(
+    equipment: Equipment,
+    onDismiss: () -> Unit,
+    onConfirm: (String) -> Unit
+) {
+    var name by remember { mutableStateOf(equipment.nome) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        confirmButton = {
+            Button(
+                onClick = {
+                    if (name.isNotBlank()) {
+                        onConfirm(name.trim())
+                        onDismiss()
+                    }
+                },
+                enabled = name.isNotBlank(),
+                colors = ButtonDefaults.buttonColors(containerColor = Indigo600),
+                shape = RoundedCornerShape(12.dp)
+            ) {
+                Text("Salvar", fontWeight = FontWeight.Bold)
+            }
+        },
+        dismissButton = {
+            TextButton(
+                onClick = onDismiss,
+                colors = ButtonDefaults.textButtonColors(contentColor = Slate400)
+            ) {
+                Text("Cancelar")
+            }
+        },
+        title = {
+            Text(
+                text = "Renomear Equipamento",
+                color = Color.White,
+                fontSize = 18.sp,
+                fontWeight = FontWeight.Bold
+            )
+        },
+        text = {
+            OutlinedTextField(
+                value = name,
+                onValueChange = { name = it },
+                label = { Text("Nome do equipamento") },
+                colors = OutlinedTextFieldDefaults.colors(
+                    focusedTextColor = Slate100,
+                    unfocusedTextColor = Slate100,
+                    focusedContainerColor = Slate900,
+                    unfocusedContainerColor = Slate900,
+                    focusedBorderColor = Indigo600,
+                    unfocusedBorderColor = Slate700,
+                    focusedLabelColor = Indigo600,
+                    unfocusedLabelColor = Slate400
+                ),
+                shape = RoundedCornerShape(12.dp),
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth()
+            )
+        },
+        containerColor = Slate800,
+        shape = RoundedCornerShape(24.dp)
+    )
+}
+
+@Composable
+fun ConfirmDeleteTabDialog(
+    tab: EquipmentTab,
+    onDismiss: () -> Unit,
+    onConfirm: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        confirmButton = {
+            Button(
+                onClick = {
+                    onConfirm()
+                    onDismiss()
+                },
+                colors = ButtonDefaults.buttonColors(containerColor = StatusManutencao),
+                shape = RoundedCornerShape(12.dp)
+            ) {
+                Text("Excluir", fontWeight = FontWeight.Bold)
+            }
+        },
+        dismissButton = {
+            TextButton(
+                onClick = onDismiss,
+                colors = ButtonDefaults.textButtonColors(contentColor = Slate400)
+            ) {
+                Text("Cancelar")
+            }
+        },
+        title = {
+            Text(
+                text = "Excluir Aba?",
+                color = Color.White,
+                fontSize = 18.sp,
+                fontWeight = FontWeight.Bold
+            )
+        },
+        text = {
+            Text(
+                text = "Tem certeza que deseja excluir a aba \"${tab.name}\"? Todo o maquinário associado a ela também será removido permanentemente.",
+                color = Slate100,
+                fontSize = 14.sp
+            )
+        },
+        containerColor = Slate800,
+        shape = RoundedCornerShape(24.dp)
+    )
+}
+
+
+@Composable
+fun SelectReportTypeDialog(
+    onDismiss: () -> Unit,
+    onSelectSimple: () -> Unit,
+    onSelectDetailed: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        confirmButton = {},
+        dismissButton = {},
+        title = {
+            Text(
+                text = "Tipo de Relatório",
+                color = Color.White,
+                fontSize = 18.sp,
+                fontWeight = FontWeight.Bold
+            )
+        },
+        text = {
+            Column(
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 8.dp)
+            ) {
+                Text(
+                    text = "Selecione o formato de relatório para compartilhar:",
+                    color = Slate400,
+                    fontSize = 14.sp,
+                    modifier = Modifier.padding(bottom = 8.dp)
+                )
+
+                Button(
+                    onClick = {
+                        onSelectSimple()
+                        onDismiss()
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = Indigo600),
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(imageVector = Icons.Default.Share, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Text(text = "Relatório Simples", fontWeight = FontWeight.Bold)
+                    }
+                }
+
+                Button(
+                    onClick = {
+                        onSelectDetailed()
+                        onDismiss()
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = Indigo700),
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(imageVector = Icons.Default.List, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Text(text = "Relatório Detalhado", fontWeight = FontWeight.Bold)
+                    }
+                }
+
+                OutlinedButton(
+                    onClick = onDismiss,
+                    border = BorderStroke(1.dp, Slate700),
+                    colors = ButtonDefaults.outlinedButtonColors(contentColor = Slate100),
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text(text = "Cancelar", fontWeight = FontWeight.Medium)
+                }
+            }
+        },
+        containerColor = Slate800,
+        shape = RoundedCornerShape(24.dp)
+    )
+}
+
+fun generateSimpleReportText(equipments: List<Equipment>, tabName: String = "Frota"): String {
+    val dateFormat = SimpleDateFormat("dd/MM/yyyy HH:mm", Locale("pt", "BR"))
+    val currentDateTimeStatus = dateFormat.format(Date())
+    
+    val sb = java.lang.StringBuilder()
+    sb.append("📊 *STATUS: ${tabName.uppercase()} - $currentDateTimeStatus* 📊\n\n")
+    
+    for (item in equipments) {
+        val emoji = when (item.status) {
+            "Disponível" -> "🟢"
+            "Em Manutenção" -> "🔴"
+            "Preventiva" -> "🟡"
+            else -> "⚪"
+        }
+        sb.append("$emoji *${item.nome}:* ${item.status}")
+        if (item.obs.trim().isNotEmpty()) {
+            sb.append(" - Obs: ${item.obs.trim()}")
+        }
+        sb.append("\n")
+    }
+    
+    sb.append("\n")
+    
+    val available = equipments.filter { it.status == "Disponível" }
+    
+    var paCount = 0
+    var miCount = 0
+    var escCount = 0
+    var emCount = 0
+    var vassourasCount = 0
+    val others = mutableListOf<Equipment>()
+    
+    for (item in available) {
+        val nameLower = item.nome.trim().lowercase(Locale.ROOT)
+        when {
+            nameLower.contains("vassoura") -> vassourasCount++
+            nameLower.startsWith("mini") || nameLower.startsWith("mi ") || nameLower == "mi" || nameLower.startsWith("mi-") -> miCount++
+            nameLower.startsWith("pa") || nameLower.startsWith("pá") || nameLower.startsWith("pcarregadeira") -> paCount++
+            nameLower.startsWith("esc") -> escCount++
+            nameLower.startsWith("em") -> emCount++
+            else -> others.add(item)
+        }
+    }
+    
+    if (paCount > 0) {
+        sb.append(String.format(Locale("pt", "BR"), "%02d Pa liberadas\n", paCount))
+    }
+    if (miCount > 0) {
+        sb.append(String.format(Locale("pt", "BR"), "%02d Mi liberadas\n", miCount))
+    }
+    if (escCount > 0) {
+        sb.append(String.format(Locale("pt", "BR"), "%02d Esc liberadas\n", escCount))
+    }
+    if (emCount > 0) {
+        sb.append(String.format(Locale("pt", "BR"), "%02d Em liberadas\n", emCount))
+    }
+    if (vassourasCount > 0) {
+        val label = if (vassourasCount == 1) "vassoura" else "vassouras"
+        sb.append(String.format(Locale("pt", "BR"), "%02d %s\n", vassourasCount, label))
+    }
+    
+    val otherGroups = others.groupBy { it.nome.trim().split(" ").firstOrNull()?.trim() ?: "Outros" }
+    for ((groupName, items) in otherGroups) {
+        sb.append(String.format(Locale("pt", "BR"), "%02d %s liberadas\n", items.size, groupName))
+    }
+    
+    sb.append("\n_Gerado automaticamente pelo RP.Status_")
+    return sb.toString()
+}
+
+fun generateDetailedReportText(equipments: List<Equipment>, tabName: String = "Frota"): String {
+    val dateFormat = SimpleDateFormat("dd/MM/yyyy HH:mm", Locale("pt", "BR"))
+    val currentDateTimeStatus = dateFormat.format(Date())
+    
+    val sb = java.lang.StringBuilder()
+    sb.append("📊 *STATUS: ${tabName.uppercase()} - $currentDateTimeStatus* 📊\n\n")
+    
+    for (item in equipments) {
+        val emoji = when (item.status) {
+            "Disponível" -> "🟢"
+            "Em Manutenção" -> "🔴"
+            "Preventiva" -> "🟡"
+            else -> "⚪"
+        }
+        sb.append("$emoji *${item.nome}:* ${item.status}")
+        if (item.obs.trim().isNotEmpty()) {
+            sb.append(" - Obs: ${item.obs.trim()}")
+        }
+        sb.append("\n")
+    }
+    
+    sb.append("\n")
+    
+    val available = equipments.filter { it.status == "Disponível" }
+    
+    val pas = mutableListOf<Equipment>()
+    var miCount = 0
+    var escCount = 0
+    var emCount = 0
+    var vassourasCount = 0
+    val others = mutableListOf<Equipment>()
+    
+    for (item in available) {
+        val nameLower = item.nome.trim().lowercase(Locale.ROOT)
+        when {
+            nameLower.contains("vassoura") -> vassourasCount++
+            nameLower.startsWith("mini") || nameLower.startsWith("mi ") || nameLower == "mi" || nameLower.startsWith("mi-") -> miCount++
+            nameLower.startsWith("pa") || nameLower.startsWith("pá") || nameLower.startsWith("pcarregadeira") -> pas.add(item)
+            nameLower.startsWith("esc") -> escCount++
+            nameLower.startsWith("em") -> emCount++
+            else -> others.add(item)
+        }
+    }
+    
+    if (pas.isNotEmpty()) {
+        sb.append(String.format(Locale("pt", "BR"), "%02d Pa liberadas\n", pas.size))
+        
+        var simpleCount = 0
+        var hiTipCount = 0
+        var engCount = 0
+        
+        for (pa in pas) {
+            val nameLower = pa.nome.trim().lowercase(Locale.ROOT)
+            when {
+                nameLower.contains("hi tip") || nameLower.contains("hitip") || nameLower.contains("hi-tip") -> hiTipCount++
+                nameLower.contains("eng") || nameLower.contains("engate") -> engCount++
+                else -> simpleCount++
+            }
+        }
+        
+        if (simpleCount > 0) {
+            sb.append(String.format(Locale("pt", "BR"), "%02d Pa simples\n", simpleCount))
+        }
+        if (hiTipCount > 0) {
+            sb.append(String.format(Locale("pt", "BR"), "%02d Pa hi tip\n", hiTipCount))
+        }
+        if (engCount > 0) {
+            sb.append(String.format(Locale("pt", "BR"), "%02d Pa eng\n", engCount))
+        }
+    }
+    
+    if (miCount > 0) {
+        sb.append(String.format(Locale("pt", "BR"), "%02d Mi liberadas\n", miCount))
+    }
+    if (escCount > 0) {
+        sb.append(String.format(Locale("pt", "BR"), "%02d Esc liberadas\n", escCount))
+    }
+    if (emCount > 0) {
+        sb.append(String.format(Locale("pt", "BR"), "%02d Em liberadas\n", emCount))
+    }
+    if (vassourasCount > 0) {
+        val label = if (vassourasCount == 1) "vassoura" else "vassouras"
+        sb.append(String.format(Locale("pt", "BR"), "%02d %s\n", vassourasCount, label))
+    }
+    
+    val otherGroups = others.groupBy { it.nome.trim().split(" ").firstOrNull()?.trim() ?: "Outros" }
+    for ((groupName, items) in otherGroups) {
+        sb.append(String.format(Locale("pt", "BR"), "%02d %s liberadas\n", items.size, groupName))
+    }
+    
+    sb.append("\n_Gerado automaticamente pelo RP.Status_")
+    return sb.toString()
+}
+
+@Composable
+fun SettingsDialog(
+    viewModel: EquipmentViewModel,
+    onDismiss: () -> Unit,
+    snackbarHostState: SnackbarHostState,
+    coroutineScope: kotlinx.coroutines.CoroutineScope
+) {
+    val context = LocalContext.current
+    var isImportMode by remember { mutableStateOf(false) }
+    var importText by remember { mutableStateOf("") }
+    
+    val fileExportLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.CreateDocument("application/json")
+    ) { uri: Uri? ->
+        if (uri != null) {
+            try {
+                val jsonString = viewModel.getBackupJsonString()
+                context.contentResolver.openOutputStream(uri)?.use { outputStream ->
+                    outputStream.write(jsonString.toByteArray())
+                }
+                coroutineScope.launch {
+                    snackbarHostState.showSnackbar(
+                        message = "💾 Backup exportado e salvo no armazenamento!",
+                        duration = SnackbarDuration.Short
+                    )
+                }
+                Toast.makeText(context, "Arquivo de backup salvo com sucesso!", Toast.LENGTH_SHORT).show()
+            } catch (e: Exception) {
+                e.printStackTrace()
+                Toast.makeText(context, "Erro ao salvar o arquivo: ${e.localizedMessage}", Toast.LENGTH_LONG).show()
+            }
+        }
+    }
+
+    val fileImportLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { uri: Uri? ->
+        if (uri != null) {
+            try {
+                val jsonString = context.contentResolver.openInputStream(uri)?.use { inputStream ->
+                    inputStream.reader().readText()
+                }
+                if (jsonString != null) {
+                    viewModel.importBackupJsonString(
+                        jsonStr = jsonString,
+                        onSuccess = {
+                            Toast.makeText(context, "Configurações importadas e restauradas com sucesso!", Toast.LENGTH_LONG).show()
+                            onDismiss()
+                        },
+                        onError = { errorMsg ->
+                            Toast.makeText(context, "Erro ao importar: $errorMsg", Toast.LENGTH_LONG).show()
+                        }
+                    )
+                }
+            } catch (e: Exception) {
+                e.printStackTrace()
+                Toast.makeText(context, "Erro ao carregar o arquivo: ${e.localizedMessage}", Toast.LENGTH_LONG).show()
+            }
+        }
+    }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        confirmButton = {},
+        dismissButton = {},
+        title = {
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Settings,
+                    contentDescription = null,
+                    tint = Color.White,
+                    modifier = Modifier.size(24.dp)
+                )
+                Text(
+                    text = "Configurações",
+                    color = Color.White,
+                    fontSize = 20.sp,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+        },
+        text = {
+            Column(
+                verticalArrangement = Arrangement.spacedBy(16.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 8.dp)
+            ) {
+                if (!isImportMode) {
+                    Text(
+                        text = "Gerencie os dados das suas abas e equipamentos desta frota salvando ou importando diretamente do seu dispositivo.",
+                        color = Slate400,
+                        fontSize = 14.sp
+                    )
+                    
+                    Text(
+                        text = "EXPORTAR / SALVAR",
+                        color = Indigo400,
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold,
+                        letterSpacing = 1.sp
+                    )
+
+                    // Card 1: Save file directly to phone
+                    Card(
+                        colors = CardDefaults.cardColors(containerColor = Slate900.copy(alpha = 0.4f)),
+                        border = BorderStroke(1.dp, Slate700.copy(alpha = 0.5f)),
+                        shape = RoundedCornerShape(12.dp)
+                    ) {
+                        Column(
+                            modifier = Modifier
+                                .clickable {
+                                    try {
+                                        fileExportLauncher.launch("rp_status_backup.json")
+                                    } catch (e: Exception) {
+                                        Toast.makeText(context, "Não foi possível abrir o seletor de arquivos.", Toast.LENGTH_SHORT).show()
+                                    }
+                                }
+                                .padding(16.dp)
+                        ) {
+                            Row(
+                                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Share,
+                                    contentDescription = null,
+                                    tint = Indigo400,
+                                    modifier = Modifier.size(24.dp)
+                                )
+                                Column {
+                                    Text(
+                                        text = "Salvar Arquivo de Backup",
+                                        color = Color.White,
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 15.sp
+                                    )
+                                    Spacer(modifier = Modifier.height(2.dp))
+                                    Text(
+                                        text = "Salva o arquivo JSON com todas as configurações na memória do seu aparelho para uso futuro.",
+                                        color = Slate400,
+                                        fontSize = 12.sp,
+                                        lineHeight = 16.sp
+                                    )
+                                }
+                            }
+                        }
+                    }
+
+                    // Card 2: Copy to Clipboard / Share via other apps
+                    Card(
+                        colors = CardDefaults.cardColors(containerColor = Slate900.copy(alpha = 0.4f)),
+                        border = BorderStroke(1.dp, Slate700.copy(alpha = 0.5f)),
+                        shape = RoundedCornerShape(12.dp)
+                    ) {
+                        Column(
+                            modifier = Modifier
+                                .clickable {
+                                    val backupJsonStr = viewModel.getBackupJsonString()
+                                    val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                                    val clip = ClipData.newPlainText("RPStatusBackup", backupJsonStr)
+                                    clipboard.setPrimaryClip(clip)
+                                    
+                                    val shareIntent = Intent(Intent.ACTION_SEND).apply {
+                                        type = "text/plain"
+                                        putExtra(Intent.EXTRA_SUBJECT, "Backup RP.Status")
+                                        putExtra(Intent.EXTRA_TEXT, backupJsonStr)
+                                    }
+                                    context.startActivity(Intent.createChooser(shareIntent, "Enviar código de configuração"))
+                                    
+                                    coroutineScope.launch {
+                                        snackbarHostState.showSnackbar(
+                                            message = "💾 Texto copiado e pronto para compartilhar!",
+                                            duration = SnackbarDuration.Short
+                                        )
+                                    }
+                                }
+                                .padding(16.dp)
+                        ) {
+                            Row(
+                                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Share,
+                                    contentDescription = null,
+                                    tint = Slate400,
+                                    modifier = Modifier.size(24.dp)
+                                )
+                                Column {
+                                    Text(
+                                        text = "Copiar e Compartilhar Texto",
+                                        color = Color.White,
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 15.sp
+                                    )
+                                    Spacer(modifier = Modifier.height(2.dp))
+                                    Text(
+                                        text = "Copia os dados formatados em texto JSON para compartilhar rápido em mensageiros.",
+                                        color = Slate400,
+                                        fontSize = 12.sp,
+                                        lineHeight = 16.sp
+                                    )
+                                }
+                            }
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(4.dp))
+
+                    Text(
+                        text = "IMPORTAR / RESTAURAR",
+                        color = Indigo400,
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold,
+                        letterSpacing = 1.sp
+                    )
+
+                    // Card 3: Load Backup file from storage
+                    Card(
+                        colors = CardDefaults.cardColors(containerColor = Slate900.copy(alpha = 0.4f)),
+                        border = BorderStroke(1.dp, Slate700.copy(alpha = 0.5f)),
+                        shape = RoundedCornerShape(12.dp)
+                    ) {
+                        Column(
+                            modifier = Modifier
+                                .clickable {
+                                    try {
+                                        fileImportLauncher.launch(arrayOf("*/*"))
+                                    } catch (e: Exception) {
+                                        Toast.makeText(context, "Não foi possível abrir o seletor de arquivos.", Toast.LENGTH_SHORT).show()
+                                    }
+                                }
+                                .padding(16.dp)
+                        ) {
+                            Row(
+                                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Add,
+                                    contentDescription = null,
+                                    tint = Indigo400,
+                                    modifier = Modifier.size(24.dp)
+                                )
+                                Column {
+                                    Text(
+                                        text = "Importar Arquivo de Backup",
+                                        color = Color.White,
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 15.sp
+                                    )
+                                    Spacer(modifier = Modifier.height(2.dp))
+                                    Text(
+                                        text = "Selecione um arquivo .json salvo no seu gerenciador de arquivos ou downloads para restaurar.",
+                                        color = Slate400,
+                                        fontSize = 12.sp,
+                                        lineHeight = 16.sp
+                                    )
+                                }
+                            }
+                        }
+                    }
+
+                    // Card 4: Paste text manually
+                    Card(
+                        colors = CardDefaults.cardColors(containerColor = Slate900.copy(alpha = 0.4f)),
+                        border = BorderStroke(1.dp, Slate700.copy(alpha = 0.5f)),
+                        shape = RoundedCornerShape(12.dp)
+                    ) {
+                        Column(
+                            modifier = Modifier
+                                .clickable {
+                                    isImportMode = true
+                                    try {
+                                        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                                        val item = clipboard.primaryClip?.getItemAt(0)
+                                        val clipText = item?.text?.toString() ?: ""
+                                        if (clipText.contains("\"tabs\"") && clipText.contains("\"equipments\"")) {
+                                            importText = clipText
+                                        }
+                                    } catch (e: Exception) {
+                                        // Ignore clipboard read errors
+                                    }
+                                }
+                                .padding(16.dp)
+                        ) {
+                            Row(
+                                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Add,
+                                    contentDescription = null,
+                                    tint = Slate400,
+                                    modifier = Modifier.size(24.dp)
+                                )
+                                Column {
+                                    Text(
+                                        text = "Importar Copiando e Colando",
+                                        color = Color.White,
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 15.sp
+                                    )
+                                    Spacer(modifier = Modifier.height(2.dp))
+                                    Text(
+                                        text = "Se preferir, cole o texto JSON de backup copiado diretamente na caixa de texto na próxima tela.",
+                                        color = Slate400,
+                                        fontSize = 12.sp,
+                                        lineHeight = 16.sp
+                                    )
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    // Import Input Mode
+                    Text(
+                        text = "Cole o texto JSON de backup abaixo para restaurar as suas configurações de frota:",
+                        color = Slate400,
+                        fontSize = 13.sp,
+                        lineHeight = 18.sp
+                    )
+                    
+                    OutlinedTextField(
+                        value = importText,
+                        onValueChange = { importText = it },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(180.dp),
+                        textStyle = androidx.compose.ui.text.TextStyle(fontSize = 11.sp, fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace),
+                        shape = RoundedCornerShape(12.dp),
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedTextColor = Slate100,
+                            unfocusedTextColor = Slate100,
+                            focusedContainerColor = Slate900,
+                            unfocusedContainerColor = Slate900,
+                            focusedBorderColor = Indigo400,
+                            unfocusedBorderColor = Slate700,
+                            focusedLabelColor = Indigo400,
+                            unfocusedLabelColor = Slate400
+                        ),
+                        placeholder = {
+                            Text(
+                                text = "Cole seu JSON de backup aqui...",
+                                color = Slate600,
+                                fontSize = 12.sp
+                            )
+                        }
+                    )
+                    
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        // Paste helper button
+                        OutlinedButton(
+                            onClick = {
+                                try {
+                                    val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                                    val clipText = clipboard.primaryClip?.getItemAt(0)?.text?.toString() ?: ""
+                                    if (clipText.isNotBlank()) {
+                                        importText = clipText
+                                        Toast.makeText(context, "Texto colado!", Toast.LENGTH_SHORT).show()
+                                    } else {
+                                        Toast.makeText(context, "Área de transferência vazia.", Toast.LENGTH_SHORT).show()
+                                    }
+                                } catch (e: Exception) {
+                                    Toast.makeText(context, "Não foi possível acessar a área de transferência.", Toast.LENGTH_SHORT).show()
+                                }
+                            },
+                            border = BorderStroke(1.dp, Slate700),
+                            colors = ButtonDefaults.outlinedButtonColors(contentColor = Slate100),
+                            shape = RoundedCornerShape(10.dp),
+                            modifier = Modifier.weight(1.5f)
+                        ) {
+                            Text("Colar da Área", fontSize = 12.sp)
+                        }
+                        
+                        // Import Confirm Button
+                        Button(
+                            onClick = {
+                                if (importText.isBlank()) {
+                                    Toast.makeText(context, "Por favor, insira o JSON do backup.", Toast.LENGTH_SHORT).show()
+                                    return@Button
+                                }
+                                viewModel.importBackupJsonString(
+                                    jsonStr = importText,
+                                    onSuccess = {
+                                        Toast.makeText(context, "Configurações restauradas com sucesso!", Toast.LENGTH_LONG).show()
+                                        onDismiss()
+                                    },
+                                    onError = { errorMsg ->
+                                        Toast.makeText(context, "Erro na importação: $errorMsg", Toast.LENGTH_LONG).show()
+                                    }
+                                )
+                            },
+                            colors = ButtonDefaults.buttonColors(containerColor = Indigo600),
+                            shape = RoundedCornerShape(10.dp),
+                            modifier = Modifier.weight(1.5f)
+                        ) {
+                            Text("Restaurar", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                        }
+                    }
+                    
+                    TextButton(
+                        onClick = { isImportMode = false },
+                        colors = ButtonDefaults.textButtonColors(contentColor = Slate400),
+                        modifier = Modifier.align(Alignment.CenterHorizontally)
+                    ) {
+                        Text("← Voltar")
+                    }
+                }
+                
+                if (!isImportMode) {
+                    OutlinedButton(
+                        onClick = onDismiss,
+                        border = BorderStroke(1.dp, Slate700),
+                        colors = ButtonDefaults.outlinedButtonColors(contentColor = Slate100),
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text(text = "Fechar", fontWeight = FontWeight.Medium)
+                    }
+                }
+            }
+        },
+        containerColor = Slate800,
+        shape = RoundedCornerShape(24.dp)
+    )
+}
+
