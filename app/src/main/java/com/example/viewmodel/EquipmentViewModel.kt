@@ -159,6 +159,44 @@ class EquipmentViewModel(application: Application) : AndroidViewModel(applicatio
         }
     }
 
+    fun moveEquipmentUp(equipment: Equipment) {
+        viewModelScope.launch {
+            val list = equipmentsState.value
+                .filter { it.tabId == equipment.tabId }
+                .sortedWith(compareBy({ it.ordem }, { it.id }))
+            val index = list.indexOfFirst { it.id == equipment.id }
+            if (index > 0) {
+                val updatedList = list.toMutableList()
+                val prev = updatedList[index - 1]
+                updatedList[index - 1] = equipment
+                updatedList[index] = prev
+                
+                updatedList.forEachIndexed { idx, eq ->
+                    repository.update(eq.copy(ordem = idx))
+                }
+            }
+        }
+    }
+
+    fun moveEquipmentDown(equipment: Equipment) {
+        viewModelScope.launch {
+            val list = equipmentsState.value
+                .filter { it.tabId == equipment.tabId }
+                .sortedWith(compareBy({ it.ordem }, { it.id }))
+            val index = list.indexOfFirst { it.id == equipment.id }
+            if (index >= 0 && index < list.size - 1) {
+                val updatedList = list.toMutableList()
+                val next = updatedList[index + 1]
+                updatedList[index + 1] = equipment
+                updatedList[index] = next
+                
+                updatedList.forEachIndexed { idx, eq ->
+                    repository.update(eq.copy(ordem = idx))
+                }
+            }
+        }
+    }
+
     fun getBackupJsonString(): String {
         val json = org.json.JSONObject()
         try {
@@ -181,6 +219,7 @@ class EquipmentViewModel(application: Application) : AndroidViewModel(applicatio
                 eqObj.put("status", eq.status)
                 eqObj.put("obs", eq.obs)
                 eqObj.put("tabId", eq.tabId)
+                eqObj.put("ordem", eq.ordem)
                 equipmentsArray.put(eqObj)
             }
             json.put("equipments", equipmentsArray)
@@ -218,7 +257,8 @@ class EquipmentViewModel(application: Application) : AndroidViewModel(applicatio
                     val status = eqObj.getString("status")
                     val obs = eqObj.optString("obs", "")
                     val tabId = eqObj.getLong("tabId")
-                    equipmentsToInsert.add(Equipment(id = id, nome = nome, status = status, obs = obs, tabId = tabId))
+                    val ordem = eqObj.optInt("ordem", 0)
+                    equipmentsToInsert.add(Equipment(id = id, nome = nome, status = status, obs = obs, tabId = tabId, ordem = ordem))
                 }
                 
                 if (tabsToInsert.isEmpty()) {

@@ -9,5 +9,6 @@ data class Equipment(
     val nome: String,
     val status: String, // "Disponível", "Em Manutenção", "Preventiva"
     val obs: String = "",
-    val tabId: Long = 1L
+    val tabId: Long = 1L,
+    val ordem: Int = 0
 )

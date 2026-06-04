@@ -56,6 +56,12 @@ import java.util.*
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import android.net.Uri
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.foundation.gestures.detectTapGestures
+import kotlinx.coroutines.withTimeoutOrNull
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.waitForUpOrCancellation
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -94,6 +100,7 @@ fun RPStatusApp(
     var renameTabTarget by remember { mutableStateOf<EquipmentTab?>(null) }
     var deleteTabTarget by remember { mutableStateOf<EquipmentTab?>(null) }
     var renameEquipmentTarget by remember { mutableStateOf<Equipment?>(null) }
+    var reorderEquipmentTarget by remember { mutableStateOf<Equipment?>(null) }
     var showSelectReportTypeForShare by remember { mutableStateOf(false) }
     var showSelectReportTypeForCopy by remember { mutableStateOf(false) }
     var showSettingsDialog by remember { mutableStateOf(false) }
@@ -196,6 +203,19 @@ fun RPStatusApp(
             tab = tab,
             onDismiss = { deleteTabTarget = null },
             onConfirm = { viewModel.deleteTab(tab.id) }
+        )
+    }
+
+    reorderEquipmentTarget?.let { eq ->
+        val list = filteredEquipments
+        val index = list.indexOfFirst { it.id == eq.id }
+        ReorderEquipmentDialog(
+            equipment = eq,
+            onMoveUp = { viewModel.moveEquipmentUp(eq) },
+            onMoveDown = { viewModel.moveEquipmentDown(eq) },
+            onDismiss = { reorderEquipmentTarget = null },
+            isFirst = index <= 0,
+            isLast = index < 0 || index >= list.size - 1
         )
     }
 
@@ -306,6 +326,9 @@ fun RPStatusApp(
                                         },
                                         onDeleteClick = {
                                             viewModel.deleteEquipment(item)
+                                        },
+                                        onReorderClick = {
+                                            reorderEquipmentTarget = item
                                         }
                                     )
                                 }
@@ -401,6 +424,9 @@ fun RPStatusApp(
                                 },
                                 onDeleteClick = {
                                     viewModel.deleteEquipment(item)
+                                },
+                                onReorderClick = {
+                                    reorderEquipmentTarget = item
                                 }
                             )
                         }
@@ -800,7 +826,7 @@ fun EmptyStateBlock(modifier: Modifier = Modifier) {
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
 fun EquipmentCard(
     equipment: Equipment,
@@ -808,6 +834,7 @@ fun EquipmentCard(
     onObsChange: (String) -> Unit,
     onRenameClick: () -> Unit,
     onDeleteClick: () -> Unit,
+    onReorderClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     val borderColor = when (equipment.status) {
@@ -833,6 +860,10 @@ fun EquipmentCard(
         modifier = modifier
             .fillMaxWidth()
             .testTag("equipment_card_${equipment.id}")
+            .combinedClickable(
+                onClick = {},
+                onLongClick = onReorderClick
+            )
             .drawWithContent {
                 // Draw the card content first
                 drawContent()
@@ -1646,6 +1677,97 @@ fun RenameEquipmentDialog(
 }
 
 @Composable
+fun ReorderEquipmentDialog(
+    equipment: Equipment,
+    onMoveUp: () -> Unit,
+    onMoveDown: () -> Unit,
+    onDismiss: () -> Unit,
+    isFirst: Boolean,
+    isLast: Boolean
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        confirmButton = {},
+        dismissButton = {
+            TextButton(
+                onClick = onDismiss,
+                colors = ButtonDefaults.textButtonColors(contentColor = Slate400)
+            ) {
+                Text("Fechar")
+            }
+        },
+        title = {
+            Text(
+                text = "Reordenar Equipamento",
+                color = Color.White,
+                fontSize = 18.sp,
+                fontWeight = FontWeight.Bold
+            )
+        },
+        text = {
+            Column(
+                modifier = Modifier.fillMaxWidth(),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Text(
+                    text = "Ajustar ordem de: ${equipment.nome}",
+                    color = Slate400,
+                    fontSize = 14.sp
+                )
+                
+                Spacer(modifier = Modifier.height(4.dp))
+                
+                // Button 1: Move UP
+                Button(
+                    onClick = {
+                        onMoveUp()
+                        onDismiss()
+                    },
+                    enabled = !isFirst,
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = Indigo600,
+                        disabledContainerColor = Slate700.copy(alpha = 0.3f)
+                    ),
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text("⬆️  Mover para Cima", fontWeight = FontWeight.Bold, color = if (!isFirst) Color.White else Slate600)
+                    }
+                }
+                
+                // Button 2: Move DOWN
+                Button(
+                    onClick = {
+                        onMoveDown()
+                        onDismiss()
+                    },
+                    enabled = !isLast,
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = Indigo600,
+                        disabledContainerColor = Slate700.copy(alpha = 0.3f)
+                    ),
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text("⬇️  Mover para Baixo", fontWeight = FontWeight.Bold, color = if (!isLast) Color.White else Slate600)
+                    }
+                }
+            }
+        },
+        containerColor = Slate800,
+        shape = RoundedCornerShape(24.dp)
+    )
+}
+
+@Composable
 fun ConfirmDeleteTabDialog(
     tab: EquipmentTab,
     onDismiss: () -> Unit,
@@ -1792,7 +1914,7 @@ fun generateSimpleReportText(equipments: List<Equipment>, tabName: String = "Fro
             "Preventiva" -> "🟡"
             else -> "⚪"
         }
-        sb.append("$emoji *${item.nome}:* ${item.status}")
+        sb.append("$emoji *${item.nome.trim()}:* ${item.status}")
         if (item.obs.trim().isNotEmpty()) {
             sb.append(" - Obs: ${item.obs.trim()}")
         }
@@ -1801,7 +1923,7 @@ fun generateSimpleReportText(equipments: List<Equipment>, tabName: String = "Fro
     
     sb.append("\n")
     
-    val available = equipments.filter { it.status == "Disponível" }
+    val available = equipments.filter { it.status.trim() == "Disponível" }
     
     var paCount = 0
     var miCount = 0
@@ -1844,6 +1966,56 @@ fun generateSimpleReportText(equipments: List<Equipment>, tabName: String = "Fro
         sb.append(String.format(Locale("pt", "BR"), "%02d %s liberadas\n", items.size, groupName))
     }
     
+    val notAvailable = equipments.filter { it.status.trim() != "Disponível" }
+    if (notAvailable.isNotEmpty()) {
+        var paNotAvail = 0
+        var miNotAvail = 0
+        var escNotAvail = 0
+        var emNotAvail = 0
+        var vassourasNotAvail = 0
+        val othersNotAvail = mutableListOf<Equipment>()
+        
+        for (item in notAvailable) {
+            val nameLower = item.nome.trim().lowercase(Locale.ROOT)
+            when {
+                nameLower.contains("vassoura") -> vassourasNotAvail++
+                nameLower.startsWith("mini") || nameLower.startsWith("mi ") || nameLower == "mi" || nameLower.startsWith("mi-") -> miNotAvail++
+                nameLower.startsWith("pa") || nameLower.startsWith("pá") || nameLower.startsWith("pcarregadeira") -> paNotAvail++
+                nameLower.startsWith("esc") -> escNotAvail++
+                nameLower.startsWith("em") -> emNotAvail++
+                else -> othersNotAvail.add(item)
+            }
+        }
+        
+        if (paNotAvail > 0) {
+            val label = if (paNotAvail == 1) "pa não liberada" else "pa não liberadas"
+            sb.append(String.format(Locale("pt", "BR"), "%02d %s\n", paNotAvail, label))
+        }
+        if (miNotAvail > 0) {
+            val label = if (miNotAvail == 1) "mi não liberada" else "mi não liberadas"
+            sb.append(String.format(Locale("pt", "BR"), "%02d %s\n", miNotAvail, label))
+        }
+        if (escNotAvail > 0) {
+            val label = if (escNotAvail == 1) "esc não liberada" else "esc não liberadas"
+            sb.append(String.format(Locale("pt", "BR"), "%02d %s\n", escNotAvail, label))
+        }
+        if (emNotAvail > 0) {
+            val label = if (emNotAvail == 1) "em não liberada" else "em não liberadas"
+            sb.append(String.format(Locale("pt", "BR"), "%02d %s\n", emNotAvail, label))
+        }
+        if (vassourasNotAvail > 0) {
+            val label = if (vassourasNotAvail == 1) "vassoura não liberada" else "vassouras não liberadas"
+            sb.append(String.format(Locale("pt", "BR"), "%02d %s\n", vassourasNotAvail, label))
+        }
+        
+        val otherNotAvailGroups = othersNotAvail.groupBy { it.nome.trim().split(" ").firstOrNull()?.trim() ?: "Outros" }
+        for ((groupName, items) in otherNotAvailGroups) {
+            val label = if (items.size == 1) "não liberada" else "não liberadas"
+            val groupNameLower = groupName.lowercase(Locale.ROOT)
+            sb.append(String.format(Locale("pt", "BR"), "%02d %s %s\n", items.size, groupNameLower, label))
+        }
+    }
+    
     sb.append("\n_Gerado automaticamente pelo RP.Status_")
     return sb.toString()
 }
@@ -1862,7 +2034,7 @@ fun generateDetailedReportText(equipments: List<Equipment>, tabName: String = "F
             "Preventiva" -> "🟡"
             else -> "⚪"
         }
-        sb.append("$emoji *${item.nome}:* ${item.status}")
+        sb.append("$emoji *${item.nome.trim()}:* ${item.status}")
         if (item.obs.trim().isNotEmpty()) {
             sb.append(" - Obs: ${item.obs.trim()}")
         }
@@ -1871,7 +2043,7 @@ fun generateDetailedReportText(equipments: List<Equipment>, tabName: String = "F
     
     sb.append("\n")
     
-    val available = equipments.filter { it.status == "Disponível" }
+    val available = equipments.filter { it.status.trim() == "Disponível" }
     
     val pas = mutableListOf<Equipment>()
     var miCount = 0
@@ -1936,6 +2108,83 @@ fun generateDetailedReportText(equipments: List<Equipment>, tabName: String = "F
     val otherGroups = others.groupBy { it.nome.trim().split(" ").firstOrNull()?.trim() ?: "Outros" }
     for ((groupName, items) in otherGroups) {
         sb.append(String.format(Locale("pt", "BR"), "%02d %s liberadas\n", items.size, groupName))
+    }
+    
+    val notAvailable = equipments.filter { it.status.trim() != "Disponível" }
+    if (notAvailable.isNotEmpty()) {
+        val pasNotAvail = mutableListOf<Equipment>()
+        var miNotAvail = 0
+        var escNotAvail = 0
+        var emNotAvail = 0
+        var vassourasNotAvail = 0
+        val othersNotAvail = mutableListOf<Equipment>()
+        
+        for (item in notAvailable) {
+            val nameLower = item.nome.trim().lowercase(Locale.ROOT)
+            when {
+                nameLower.contains("vassoura") -> vassourasNotAvail++
+                nameLower.startsWith("mini") || nameLower.startsWith("mi ") || nameLower == "mi" || nameLower.startsWith("mi-") -> miNotAvail++
+                nameLower.startsWith("pa") || nameLower.startsWith("pá") || nameLower.startsWith("pcarregadeira") -> pasNotAvail.add(item)
+                nameLower.startsWith("esc") -> escNotAvail++
+                nameLower.startsWith("em") -> emNotAvail++
+                else -> othersNotAvail.add(item)
+            }
+        }
+        
+        if (pasNotAvail.isNotEmpty()) {
+            val label = if (pasNotAvail.size == 1) "pa não liberada" else "pa não liberadas"
+            sb.append(String.format(Locale("pt", "BR"), "%02d %s\n", pasNotAvail.size, label))
+            
+            var simpleNotAvail = 0
+            var hiTipNotAvail = 0
+            var engNotAvail = 0
+            
+            for (pa in pasNotAvail) {
+                val nameLower = pa.nome.trim().lowercase(Locale.ROOT)
+                when {
+                    nameLower.contains("hi tip") || nameLower.contains("hitip") || nameLower.contains("hi-tip") -> hiTipNotAvail++
+                    nameLower.contains("eng") || nameLower.contains("engate") -> engNotAvail++
+                    else -> simpleNotAvail++
+                }
+            }
+            
+            if (simpleNotAvail > 0) {
+                val childLabel = if (simpleNotAvail == 1) "pa simples não liberada" else "pa simples não liberadas"
+                sb.append(String.format(Locale("pt", "BR"), "%02d %s\n", simpleNotAvail, childLabel))
+            }
+            if (hiTipNotAvail > 0) {
+                val childLabel = if (hiTipNotAvail == 1) "pa hi tip não liberada" else "pa hi tip não liberadas"
+                sb.append(String.format(Locale("pt", "BR"), "%02d %s\n", hiTipNotAvail, childLabel))
+            }
+            if (engNotAvail > 0) {
+                val childLabel = if (engNotAvail == 1) "pa eng não liberada" else "pa eng não liberadas"
+                sb.append(String.format(Locale("pt", "BR"), "%02d %s\n", engNotAvail, childLabel))
+            }
+        }
+        
+        if (miNotAvail > 0) {
+            val label = if (miNotAvail == 1) "mi não liberada" else "mi não liberadas"
+            sb.append(String.format(Locale("pt", "BR"), "%02d %s\n", miNotAvail, label))
+        }
+        if (escNotAvail > 0) {
+            val label = if (escNotAvail == 1) "esc não liberada" else "esc não liberadas"
+            sb.append(String.format(Locale("pt", "BR"), "%02d %s\n", escNotAvail, label))
+        }
+        if (emNotAvail > 0) {
+            val label = if (emNotAvail == 1) "em não liberada" else "em não liberadas"
+            sb.append(String.format(Locale("pt", "BR"), "%02d %s\n", emNotAvail, label))
+        }
+        if (vassourasNotAvail > 0) {
+            val label = if (vassourasNotAvail == 1) "vassoura não liberada" else "vassouras não liberadas"
+            sb.append(String.format(Locale("pt", "BR"), "%02d %s\n", vassourasNotAvail, label))
+        }
+        
+        val otherNotAvailGroups = othersNotAvail.groupBy { it.nome.trim().split(" ").firstOrNull()?.trim() ?: "Outros" }
+        for ((groupName, items) in otherNotAvailGroups) {
+            val label = if (items.size == 1) "não liberada" else "não liberadas"
+            val groupNameLower = groupName.lowercase(Locale.ROOT)
+            sb.append(String.format(Locale("pt", "BR"), "%02d %s %s\n", items.size, groupNameLower, label))
+        }
     }
     
     sb.append("\n_Gerado automaticamente pelo RP.Status_")
